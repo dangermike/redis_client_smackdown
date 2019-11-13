@@ -72,13 +72,13 @@ func BenchmarkGoRedisDo(b *testing.B) {
 	msetArgs := make([]interface{}, (2*numKeys)+1)
 
 	mset := func(keyVals []string) {
-		msetArgs = append(msetArgs[:0], "MSET")
+		msetArgs = append(msetArgs[:0], "mset")
 		for _, kv := range keyVals {
 			msetArgs = append(msetArgs, kv)
 		}
 		_ = pipeline.Process(goredis.NewStatusCmd(msetArgs...))
 		for j := 0; j < len(keyVals); j += 2 {
-			_ = pipeline.Process(goredis.NewBoolCmd("EXPIRE", keyVals[j], "10"))
+			_ = pipeline.Process(goredis.NewBoolCmd("expire", keyVals[j], "10"))
 		}
 		cerrs, err := pipeline.Exec()
 		for eix, cerr := range cerrs {
@@ -91,15 +91,19 @@ func BenchmarkGoRedisDo(b *testing.B) {
 		}
 	}
 
+	mgetArgs := make([]interface{}, 0)
+	mgetArgs = append(mgetArgs, "mget")
 	get := func(keys, values []string) ([]string, error) {
-		vis, err := client.MGet(keys...).Result()
-		if err != nil {
+		mgetArgs = mgetArgs[:1]
+		for _, k := range keys {
+			mgetArgs = append(mgetArgs, k)
+		}
+		cmd := goredis.NewStringSliceCmd(mgetArgs...)
+		if err := client.Process(cmd); err != nil {
 			return values, err
 		}
-		for _, vi := range vis {
-			values = append(values, vi.(string))
-		}
-
+		vis := cmd.Val()
+		values = append(values, vis...)
 		return values, nil
 	}
 
@@ -210,14 +214,14 @@ func BenchmarkRedispipe(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer writeconn.Close()
-	writesync := redispipe.SyncCtx{writeconn} // wrapper for synchronous api
+	writesync := redispipe.SyncCtx{S: writeconn} // wrapper for synchronous api
 
 	readconn, err := connFactory(ctx)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer readconn.Close()
-	readsync := redispipe.SyncCtx{readconn} // wrapper for synchronous api
+	readsync := redispipe.SyncCtx{S: readconn} // wrapper for synchronous api
 
 	kvs := make([]interface{}, 2*numKeys)
 	requests := make([]redispipe.Request, 1+numKeys)
@@ -290,7 +294,6 @@ func doTest(b *testing.B, mset func([]string), mget func([]string, []string) ([]
 		keyVals := make([]string, 0, 2*numKeys)
 		for i := 0; i < b.N; i++ {
 			keys := slicePool.Get().([]string)
-			keys = keys[:0]
 			keyVals = keyVals[:0]
 
 			for j := 0; j < numKeys; j++ {
@@ -313,16 +316,17 @@ func doTest(b *testing.B, mset func([]string), mget func([]string, []string) ([]
 		cnt++
 		values, err := mget(keys, values[:0])
 		if err != nil {
-			log.Printf("GET failed: %s", err.Error())
+			b.Fatalf("GET failed: %s", err.Error())
 		} else if len(keys) != len(values) {
-			log.Printf("LENGTH MISMATCH: %d != %d", len(keys), len(values))
+			b.Fatalf("LENGTH MISMATCH: %d != %d", len(keys), len(values))
 		} else {
 			for i := 0; i < len(keys); i++ {
-				if keys[i] != values[i][0:len(keys[i])] {
-					log.Printf("%d:%d MISMATCH: %s is not a prefix of %s", cnt, i, keys[i], values[i])
+				if len(values[i]) < len(keys[i]) || keys[i] != values[i][0:len(keys[i])] {
+					b.Fatalf("%d:%d MISMATCH: %s is not a prefix of %s", cnt, i, keys[i], values[i])
 				}
 			}
 		}
+		keys = keys[:0]
 		slicePool.Put(keys)
 	}
 }
